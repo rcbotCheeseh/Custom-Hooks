@@ -29,6 +29,25 @@ funcdef HookReturnCode PlayerSeeHook(CBasePlayer@, CBaseEntity@, uint& out);
 funcdef HookReturnCode PlayerTouchHook(CBasePlayer@, CBaseEntity@, uint& out);
 funcdef HookReturnCode MonsterTakeDamageHook(CBaseMonster@, CBaseEntity@, float, int);
 funcdef HookReturnCode MonsterKilledHook(CBaseMonster@, CBaseEntity@);
+
+void PluginInit()
+{
+	g_Module.ScriptInfo.SetAuthor( "OuterBeast" );
+    g_Module.ScriptInfo.SetContactInfo( "https://github.com/Outerbeast/" );
+}
+
+final class CEntityQueueNode
+{
+    CEntityQueueNode ( CBaseEntity@ pEntity, float fTime )
+    {
+        @m_pEntity = pEntity;
+        m_fTime = fTime;
+    }
+
+    CBaseEntity@ m_pEntity; // Might want to be EHandle
+    float m_fTime; // time entity was added to queue
+}
+
 // Hook function handles
 array<PlayerSeeHook@>           FN_PLAYER_SEE_HOOKS;
 array<PlayerTouchHook@>         FN_PLAYER_TOUCH_HOOKS;
@@ -41,6 +60,11 @@ const CScheduledFunction@ fnHookThink = g_Scheduler.SetInterval( g_CustomHooks, 
 const bool blEntityCreated = g_Hooks.RegisterHook( Hooks::Game::EntityCreated, EntityCreatedHook( g_CustomHooks.EntityCreated ) );
 const bool blMapChangeHook = g_Hooks.RegisterHook( Hooks::Game::MapChange, MapChangeHook( g_CustomHooks.ResetEntityInfo ) );
 
+void MapInit()
+{
+	g_CustomHooks.HookInitialise();
+}
+
 final class CCustomHooks
 {
     protected bool blInitialised;
@@ -49,10 +73,11 @@ final class CCustomHooks
 
     protected dictionary DICT_PLAYER_TOUCHED_ENTIES;
     
-    protected array<CBaseEntity@>   P_LIVING_ENTITIES( 128 ), P_BRUSH_ENTITIES( 128 ), P_ALL_ENTITIES;
+    protected array<CBaseEntity@>   P_LIVING_ENTITIES, P_BRUSH_ENTITIES, P_ALL_ENTITIES;
     protected array<int>            I_PLAYER_SEEN( g_Engine.maxClients + 1 ), I_PLAYER_TOUCHED( g_Engine.maxClients + 1 ), I_MONSTER_DEAD( g_Engine.maxEntities + 1 );
     protected array<float>          FL_MONSTER_LAST_DMG_TAKEN( g_Engine.maxEntities + 1 );
     protected array<bool>           BL_MONSTER_DEAD( g_Engine.maxEntities + 1 );
+    array<CEntityQueueNode@>   ENTITY_QUEUE;
 
     bool RegisterHook(const uint32 iHookID, ref @fn)
     {
@@ -285,14 +310,16 @@ final class CCustomHooks
         }
     }
 
-    protected bool HookInitialise()
+    bool HookInitialise()
     {
-        GetEntities();
+        ENTITY_QUEUE = {};
+        P_LIVING_ENTITIES = {};
+        P_BRUSH_ENTITIES = {};
 
         return true;
     }
 
-    protected void GetEntities()
+    /*protected void GetEntities()
     {
         int iNumLivingEntities = g_EntityFuncs.EntitiesInBox( @P_LIVING_ENTITIES, g_vecWorldMins, g_vecWorldMaxs, FL_MONSTER );
         int iNumBrushes = g_EntityFuncs.BrushEntsInBox( @P_BRUSH_ENTITIES, g_vecWorldMins, g_vecWorldMaxs );
@@ -318,15 +345,54 @@ final class CCustomHooks
 
             P_ALL_ENTITIES.insertLast( P_BRUSH_ENTITIES[i] );
         }
+    }*/
+
+    protected void NewEntity ( CBaseEntity@ pEnt )
+    {
+        if ( pEnt.IsBSPModel() )
+        {
+            if ( P_BRUSH_ENTITIES.find(pEnt) == -1 )
+            {
+                 g_EngineFuncs.ServerPrint( "new Brush Entity for '" + pEnt.GetClassname() + "'\n");
+                P_BRUSH_ENTITIES.insertLast(pEnt);
+            }
+        }
+        else if ( pEnt.IsAlive() )
+        {
+            if( P_LIVING_ENTITIES.find(pEnt) == -1 )
+            {
+                 g_EngineFuncs.ServerPrint( "new Living Entity for '" + pEnt.GetClassname() + "'\n");
+                P_LIVING_ENTITIES.insertLast(pEnt);
+            }
+        }
     }
 
-    protected void HookThink()
+    void HookThink()
     {
-        if( !blInitialised )
+        // ENTITY QUEUE IS ALWAYS ZERO
+         g_EngineFuncs.ServerPrint( "S = " +ENTITY_QUEUE.size() +  " \n");
+         
+        while ( ENTITY_QUEUE.size() > 0 )
         {
-            blInitialised = HookInitialise();
-            return;
+            // peek top node
+            CEntityQueueNode@ top = ENTITY_QUEUE[0];
+
+           
+
+            if ( top.m_fTime < (g_Engine.time + 0.1f) )
+            {
+                g_EngineFuncs.ServerPrint( "dequeued '" +  top.m_pEntity.GetClassname() + "'\n");
+                // entity been in queue for at least 0.1 sec
+                // dequeue top node
+                NewEntity ( top.m_pEntity );
+
+                ENTITY_QUEUE.removeAt(0);
+            }
+            else 
+                break; // come back later
         }
+
+        // should maybe clean P_LIVING_ENTITIES here
 
         if( FN_PLAYER_SEE_HOOKS.length() > 0 )
             HookEvent_PlayerSee();
@@ -491,34 +557,14 @@ final class CCustomHooks
     // !-UNDER-CONSTRUCTION-!
     HookReturnCode EntityCreated(CBaseEntity@ pEntity)
     {
-/*         if( pEntity is null )
-            return HOOK_CONTINUE; */
+        if( pEntity is null )
+            return HOOK_CONTINUE; 
 
-        //g_Scheduler.SetTimeout( this, "EntitySpawned", 0.5f, EHandle( pEntity ) );
-
-/*         g_EngineFuncs.ServerPrint( "EntityCreated:" + pEntity.GetClassname() + "spawned\n" );
-
-        //if( pEntity.IsMonster() && P_LIVING_ENTITIES.find( pEntity ) < 0 )
-        if( pEntity.IsAlive() )
-        {
-            P_LIVING_ENTITIES.resize( P_LIVING_ENTITIES.length() + 1 );
-            @P_LIVING_ENTITIES[ P_LIVING_ENTITIES.length() ] = pEntity;
-            //P_ALL_ENTITIES.insertAt( 0, pEntity );
-        
-            g_EngineFuncs.ServerPrint( "Storing " + pEntity.GetClassname() + " in P_LIVING_ENTTIES array\n" );
-        }
-
-        if( pEntity.IsBSPModel() )
-        {
-            P_BRUSH_ENTITIES.insertLast( pEntity );
-            P_ALL_ENTITIES.insertLast( pEntity );
-
-            if( P_BRUSH_ENTITIES.find( pEntity ) < 0 )
-                g_EngineFuncs.ServerPrint( "Storing brush entity" + pEntity.GetClassname() + " in P_BRUSH_ENTTIES array\n" );
-        } */
-
-        g_Scheduler.SetTimeout( this, "GetEntities", 0.5f );
-
+        g_CustomHooks.ENTITY_QUEUE.insertLast(CEntityQueueNode(pEntity,g_Engine.time));
+        g_EngineFuncs.ServerPrint( "new CEntityQueueNode for '" + pEntity.GetClassname() + "'\n");
+         // ENTITY QUEUE SIZE INCREASES
+        g_EngineFuncs.ServerPrint( "size is  '" + ENTITY_QUEUE.size() + "'\n");
+    
         return HOOK_CONTINUE;
     }
 
@@ -527,9 +573,9 @@ final class CCustomHooks
         if( !blInitialised )
             return HOOK_CONTINUE;
 
-        P_LIVING_ENTITIES.resize( 0 );
-        P_BRUSH_ENTITIES.resize( 0 );
-        P_ALL_ENTITIES.resize( 0 );
+        P_LIVING_ENTITIES = {};
+        P_BRUSH_ENTITIES = {};
+        P_ALL_ENTITIES = {};
 
         I_PLAYER_TOUCHED.resize( 0 );
         I_PLAYER_SEEN.resize( 0 );
